@@ -6,44 +6,21 @@ grades document relevance, and can rewrite queries for better results.
 
 from __future__ import annotations
 
-from langchain_community.document_loaders import WebBaseLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.vectorstores import InMemoryVectorStore
-from langchain_openai import AzureOpenAIEmbeddings
+
 from langchain.tools.retriever import create_retriever_tool
 
 from langgraph.graph import MessagesState, StateGraph, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from src.llm.llm import llm
-from src.config.settings import settings, ConfigEnum
+from src.utils.docs import docs_vector_store
 
 
 def create_retriever_tool_for_rag():
     """Create and configure the retriever tool for RAG."""
-    # URLs for Lilian Weng's blog posts (as in the tutorial)
-    urls = [
-        "https://lilianweng.github.io/posts/2024-11-28-reward-hacking/",
-        "https://lilianweng.github.io/posts/2024-07-07-hallucination/",
-        "https://lilianweng.github.io/posts/2024-04-12-diffusion-video/",
-    ]
+    print("Creating retriever tool for RAG")
 
-    # Load and process documents
-    docs = [WebBaseLoader(url).load() for url in urls]
-    docs_list = [item for sublist in docs for item in sublist]
-
-    # Split documents into chunks
-    text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
-        chunk_size=500, chunk_overlap=100
-    )
-    doc_splits = text_splitter.split_documents(docs_list)
-
-    # Create vector store and retriever
-    vectorstore = InMemoryVectorStore.from_documents(
-        documents=doc_splits, 
-        embedding=AzureOpenAIEmbeddings(api_key=settings[ConfigEnum.AZURE_OPENAI_API_KEY], api_version=settings[ConfigEnum.AZURE_OPENAI_API_VERSION], azure_endpoint=settings[ConfigEnum.AZURE_OPENAI_ENDPOINT], azure_deployment=settings[ConfigEnum.AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME])
-    )
-    retriever = vectorstore.as_retriever()
+    retriever = docs_vector_store.as_retriever()
 
     # Create retriever tool
     retriever_tool = create_retriever_tool(
@@ -52,21 +29,26 @@ def create_retriever_tool_for_rag():
         "Search and return information about Lilian Weng's blog posts on AI topics like reward hacking, hallucination, and diffusion models.",
     )
 
+    print("Retriever tool created")
+
     return retriever_tool
 
 
 def generate_query_or_respond(state: MessagesState):
     """Generate a query using retriever tool or respond directly to the user."""
+    print("Generating query or responding to user")
     # Get retriever tool
     retriever_tool = create_retriever_tool_for_rag()
 
     # Call model with tool binding
     response = llm.bind_tools([retriever_tool]).invoke(state["messages"])
+    print("Query or response generated")
     return {"messages": [response]}
 
 
 def grade_documents(state: MessagesState):
     """Grade the relevance of retrieved documents and route accordingly."""
+    print("Grading documents")
     messages = state["messages"]
 
     # Get the last tool message (retrieved documents)
@@ -75,6 +57,7 @@ def grade_documents(state: MessagesState):
     # Simple grading logic - check if retrieved content seems relevant
     # In a real system, you might use an LLM to grade relevance
     if hasattr(last_message, "content") and last_message.content:
+        print("Last message content: ", last_message.content)
         content = str(last_message.content).lower()
         question = str(messages[0].content).lower()
 
@@ -87,15 +70,19 @@ def grade_documents(state: MessagesState):
 
         # If we have reasonable overlap or content length, consider it relevant
         if overlap >= 2 or len(content) > 100:
+            print("Documents are relevant")
             return "generate_answer"
         else:
+            print("Documents are not relevant")
             return "rewrite_question"
 
+    print("Documents are not relevant")
     return "rewrite_question"
 
 
 def rewrite_question(state: MessagesState):
     """Rewrite the user's question for better retrieval."""
+    print("Rewriting question")
     messages = state["messages"]
     question = messages[0].content
 
@@ -109,11 +96,13 @@ def rewrite_question(state: MessagesState):
     )
 
     response = llm.invoke([{"role": "user", "content": rewrite_prompt}])
+    print("Question rewritten")
     return {"messages": [{"role": "user", "content": response.content}]}
 
 
 def generate_answer(state: MessagesState):
     """Generate final answer using retrieved context."""
+    print("Generating answer")
     question = state["messages"][0].content
     context = state["messages"][-1].content
 
@@ -127,28 +116,36 @@ def generate_answer(state: MessagesState):
     )
 
     response = llm.invoke([{"role": "user", "content": generate_prompt}])
+    print("Answer generated")
     return {"messages": [response]}
 
 
 # Create the graph
 def create_graph():
     """Create and configure the agentic RAG graph."""
-
+    print("Creating graph")
     # Get retriever tool for the ToolNode
     retriever_tool = create_retriever_tool_for_rag()
 
     # Create the graph
     workflow = StateGraph(MessagesState)
+    print("Graph created")
 
+    print("Adding nodes")
     # Add nodes
     workflow.add_node("generate_query_or_respond", generate_query_or_respond)
     workflow.add_node("retrieve", ToolNode([retriever_tool]))
     workflow.add_node("rewrite_question", rewrite_question)
     workflow.add_node("generate_answer", generate_answer)
 
+    print("Nodes added")
+
+    print("Adding edges")
     # Add edges
     workflow.add_edge(START, "generate_query_or_respond")
+    print("Edges added")
 
+    print("Adding conditional edges")
     # Conditional edge: decide whether to retrieve or respond directly
     workflow.add_conditional_edges(
         "generate_query_or_respond",
@@ -168,12 +165,18 @@ def create_graph():
             "rewrite_question": "rewrite_question",
         },
     )
+    print("Conditional edges added")
 
+    print("Connecting flow")
     # Connect the flow
     workflow.add_edge("generate_answer", END)
     workflow.add_edge("rewrite_question", "generate_query_or_respond")
+    print("Flow connected")
 
-    return workflow.compile()
+    print("Compiling graph")    
+    graph = workflow.compile()
+    print("Graph compiled")
+    return graph
 
 
 # Export the graph

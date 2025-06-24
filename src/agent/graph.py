@@ -57,19 +57,19 @@ def grade_documents(state: MessagesState):
     # Simple grading logic - check if retrieved content seems relevant
     # In a real system, you might use an LLM to grade relevance
     if hasattr(last_message, "content") and last_message.content:
-        print("Last message content: ", last_message.content)
         content = str(last_message.content).lower()
-        question = str(messages[0].content).lower()
+        users_messages = [message for message in messages if message.type == "human"]
+        user_content = str(" ".join([message.content for message in users_messages])).lower()
 
         # Extract key terms from question for relevance check
-        question_terms = set(question.split())
+        question_terms = set(user_content.split())
         content_terms = set(content.split())
 
         # Calculate overlap
         overlap = len(question_terms.intersection(content_terms))
 
-        # If we have reasonable overlap or content length, consider it relevant
-        if overlap >= 2 or len(content) > 100:
+        # If we have reasonable overlap, consider it relevant
+        if overlap >= 2:
             print("Documents are relevant")
             return "generate_answer"
         else:
@@ -81,23 +81,13 @@ def grade_documents(state: MessagesState):
 
 
 def rewrite_question(state: MessagesState):
-    """Rewrite the user's question for better retrieval."""
-    print("Rewriting question")
+    """Rewrite the user's question for better retrieval with human-in-the-loop."""
+    print("Rewriting question with human input")
     messages = state["messages"]
-    question = messages[0].content
-
-    rewrite_prompt = (
-        "Look at the input and try to reason about the underlying semantic intent / meaning.\n"
-        "Here is the initial question:\n"
-        "------- \n"
-        f"{question}\n"
-        "------- \n"
-        "Formulate an improved question:"
-    )
-
-    response = llm.invoke([{"role": "user", "content": rewrite_prompt}])
-    print("Question rewritten")
-    return {"messages": [{"role": "user", "content": response.content}]}
+    # Use the human-provided rewrite
+    rewritten_question = messages[-1].content.replace("Human rewrite:", "").strip()
+    print(f"Using human-provided rewrite: {rewritten_question}")
+    return {"messages": [{"role": "user", "content": rewritten_question}]}
 
 
 def generate_answer(state: MessagesState):
@@ -122,7 +112,7 @@ def generate_answer(state: MessagesState):
 
 # Create the graph
 def create_graph():
-    """Create and configure the agentic RAG graph."""
+    """Create and configure the agentic RAG graph with human-in-the-loop."""
     print("Creating graph")
     # Get retriever tool for the ToolNode
     retriever_tool = create_retriever_tool_for_rag()
@@ -173,9 +163,10 @@ def create_graph():
     workflow.add_edge("rewrite_question", "generate_query_or_respond")
     print("Flow connected")
 
-    print("Compiling graph")    
-    graph = workflow.compile()
-    print("Graph compiled")
+    print("Compiling graph with human-in-the-loop interrupt")    
+    # Compile with interrupt before rewrite_question to enable human-in-the-loop
+    graph = workflow.compile(interrupt_before=["rewrite_question"])
+    print("Graph compiled with human-in-the-loop")
     return graph
 
 
